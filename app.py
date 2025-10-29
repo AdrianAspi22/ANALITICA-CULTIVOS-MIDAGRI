@@ -411,57 +411,81 @@ class AgriculturalApp:
         with col4:
             self.render_climate_impact()
 
+    def render_feature_importance(self):
+        """Muestra la importancia de las características del modelo Random Forest"""
+        st.title("🌲 Importancia de Características del Modelo (Random Forest)")
 
-    def render_data_analysis(self):
-        """Sección de análisis de datos"""
-        st.title("📊 Análisis Exploratorio de Datos")
+        try:
+            # Verificar que el modelo esté cargado
+            if self.model_data is None:
+                st.error("❌ No hay modelo cargado. Carga el modelo antes de continuar.")
+                return
 
-        col1, col2 = st.columns(2)
+            # Extraer modelo y metadatos
+            model = self.model_data.get('model', None)
+            feature_names = self.model_data.get('feature_columns', [])
 
-        with col1:
-            st.subheader("Datos de Siembra")
-            st.dataframe(
-                self.siembra_df.head(100),
-                use_container_width=True,
-                height=300
+            if model is None or not hasattr(model, 'feature_importances_'):
+                st.warning("⚠️ El modelo cargado no tiene información de importancia de características.")
+                return
+
+            importances = model.feature_importances_
+
+            # Crear DataFrame con importancias
+            import pandas as pd
+            import plotly.express as px
+
+            df_imp = pd.DataFrame({
+                'Característica': feature_names,
+                'Importancia': importances
+            }).sort_values(by='Importancia', ascending=False)
+
+            # Mostrar top N más relevantes
+            top_n = st.slider(
+                "Número de características a mostrar:",
+                min_value=5,
+                max_value=min(30, len(df_imp)),
+                value=15,
+                step=1
             )
 
-            # Resumen estadístico
-            st.subheader("Estadísticas de Siembra")
-            st.dataframe(self.siembra_df[['hectareas', 'anio']].describe())
+            df_top = df_imp.head(top_n)
 
-        with col2:
-            st.subheader("Datos de Cosecha")
-            st.dataframe(
-                self.cosecha_df.head(100),
-                use_container_width=True,
-                height=300
+            # ====== 📊 GRAFICO PRINCIPAL ======
+            fig = px.bar(
+                df_top,
+                x='Importancia',
+                y='Característica',
+                orientation='h',
+                color='Importancia',
+                color_continuous_scale='Viridis',
+                title=f"🌾 Top {top_n} Características Más Importantes del Modelo",
+                labels={'Importancia': 'Peso Relativo', 'Característica': 'Variable'}
             )
 
-            # Resumen estadístico
-            st.subheader("Estadísticas de Cosecha")
-            st.dataframe(self.cosecha_df[['toneladas', 'anio']].describe())
+            fig.update_layout(
+                height=600,
+                xaxis_title="Importancia (Feature Importance)",
+                yaxis_title="Características",
+                yaxis=dict(autorange="reversed"),  # Para que la más importante salga arriba
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)'
+            )
 
-        st.markdown("---")
+            st.plotly_chart(fig, use_container_width=True)
 
-        # Análisis de correlación
-        st.subheader("🔍 Análisis de Correlaciones")
+            # ====== 🔍 TABLA DE DATOS ======
+            st.subheader("📋 Detalle de Importancia de Características")
+            st.dataframe(df_top, use_container_width=True, height=400)
 
-        # Preparar datos para correlación
-        datos_analisis = self.datos_combinados[['hectareas', 'toneladas', 'rendimiento', 'anio']].copy()
+            # ====== 🔎 INSIGHT AUTOMÁTICO ======
+            st.markdown("---")
+            top_feature = df_top.iloc[0]['Característica']
+            st.success(f"✅ La variable con mayor influencia en el modelo es **{top_feature}**.")
 
-        # Calcular matriz de correlación
-        corr_matrix = datos_analisis.corr()
+        except Exception as e:
+            st.error(f"❌ Error al mostrar la importancia de características: {e}")
 
-        fig = px.imshow(
-            corr_matrix,
-            text_auto=True,
-            aspect="auto",
-            color_continuous_scale='RdBu_r',
-            title="Matriz de Correlación"
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
     def render_production_trend(self):
         """Gráfico de tendencia de producción"""
         st.subheader("📈 Tendencia de Producción Anual")
@@ -574,55 +598,88 @@ class AgriculturalApp:
         st.plotly_chart(fig, use_container_width=True)
 
     def render_data_analysis(self):
-        """Sección de análisis de datos"""
-        st.title("📊 Análisis Exploratorio de Datos")
+        """Sección de análisis de datos global con todas las tablas"""
+        st.title("📊 Análisis Exploratorio de Datos – Global")
 
-        col1, col2 = st.columns(2)
+        try:
+            # ====== 1️⃣ Cargar datos ======
+            # Si tu DataLoader no devuelve region_df directamente, la cargamos manualmente
+            if not hasattr(self, 'region_df'):
+                try:
+                    self.region_df = self.data_loader.load_table('region')
+                except Exception:
+                    # Si no existe el método load_table, intentamos obtenerlo desde load_all_data()
+                    if hasattr(self.data_loader, 'region_df'):
+                        self.region_df = self.data_loader.region_df
+                    else:
+                        st.warning("⚠️ No se encontró tabla 'region' en DataLoader.")
+                        self.region_df = pd.DataFrame(columns=['id_region', 'nombre_region'])
 
-        with col1:
-            st.subheader("Datos de Siembra")
-            st.dataframe(
-                self.siembra_df.head(100),
-                use_container_width=True,
-                height=300
+            # ====== 2️⃣ Preparar clima (promedio por año y región) ======
+            clima_agg = self.clima_df.groupby(['id_region', 'anio']).agg({
+                'precipitacion': 'mean',
+                'temperatura_max': 'mean',
+                'temperatura_min': 'mean'
+            }).reset_index()
+
+            # ====== 3️⃣ Combinar todas las fuentes ======
+            datos_completos = (
+                self.siembra_df
+                .merge(self.cosecha_df, on=['id_region', 'id_cultivo', 'anio'], suffixes=('_siembra', '_cosecha'))
+                .merge(clima_agg, on=['id_region', 'anio'], how='left')
+                .merge(self.cultivo_df, on='id_cultivo', how='left')
+                .merge(self.region_df, on='id_region', how='left')
             )
 
-            # Resumen estadístico
-            st.subheader("Estadísticas de Siembra")
-            st.dataframe(self.siembra_df[['hectareas', 'anio']].describe())
+            # Calcular rendimiento
+            datos_completos['rendimiento'] = datos_completos['toneladas'] / datos_completos['hectareas']
 
-        with col2:
-            st.subheader("Datos de Cosecha")
-            st.dataframe(
-                self.cosecha_df.head(100),
-                use_container_width=True,
-                height=300
-            )
+            st.success(f"✅ Datos combinados correctamente: {len(datos_completos)} registros totales")
 
-            # Resumen estadístico
-            st.subheader("Estadísticas de Cosecha")
-            st.dataframe(self.cosecha_df[['toneladas', 'anio']].describe())
+        except Exception as e:
+            st.error(f"❌ Error al combinar datos: {e}")
+            return
 
+        # ====== 4️⃣ Vista previa ======
+        with st.expander("👁️ Vista previa de los datos combinados", expanded=False):
+            st.dataframe(datos_completos.head(100), use_container_width=True, height=300)
+
+        # ====== 5️⃣ Seleccionar variables numéricas ======
+        numeric_cols = ['hectareas', 'toneladas', 'rendimiento',
+                        'precipitacion', 'temperatura_max', 'temperatura_min']
+
+        datos_numericos = datos_completos[numeric_cols].dropna()
+
+        st.subheader("📈 Estadísticas descriptivas globales")
+        st.dataframe(datos_numericos.describe(), use_container_width=True)
+
+        # ====== 6️⃣ Matriz de correlación ======
         st.markdown("---")
+        st.subheader("🔍 Matriz de Correlación Global")
 
-        # Análisis de correlación
-        st.subheader("🔍 Análisis de Correlaciones")
-
-        # Preparar datos para correlación
-        datos_analisis = self.datos_combinados[['hectareas', 'toneladas', 'rendimiento', 'anio']].copy()
-
-        # Calcular matriz de correlación
-        corr_matrix = datos_analisis.corr()
+        corr_matrix = datos_numericos.corr()
 
         fig = px.imshow(
             corr_matrix,
             text_auto=True,
             aspect="auto",
             color_continuous_scale='RdBu_r',
-            title="Matriz de Correlación"
+            title="📊 Correlación entre Variables Numéricas del Sistema"
         )
 
         st.plotly_chart(fig, use_container_width=True)
+
+        # ====== 7️⃣ Insight automático ======
+        st.markdown("---")
+        top_corr = corr_matrix.unstack().sort_values(ascending=False)
+        top_corr = top_corr[(top_corr < 0.999) & (top_corr > 0.5)]
+        if not top_corr.empty:
+            st.success("📈 Correlaciones más fuertes detectadas:")
+            for (var1, var2), corr_val in top_corr.head(5).items():
+                st.write(f"🔹 **{var1} ↔ {var2}**: correlación de **{corr_val:.2f}**")
+        else:
+            st.info("No se detectaron correlaciones mayores a 0.5 entre las variables numéricas.")
+
     def render_prediction_charts(self, prediction, rendimiento, hectareas):
         """Renderiza gráficos para los resultados de predicción"""
         col1, col2 = st.columns(2)
